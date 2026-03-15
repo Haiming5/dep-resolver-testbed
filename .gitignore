@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# dep-resolver-agent build artifacts
+/agent/node_modules/
+/agent/dist/

@@ -1,0 +1,107 @@
+name: Dependabot Auto-Resolver
+
+# ──────────────────────────────────────────────────────────────
+# Trigger: Dependabot alert created (webhook) or manual dispatch
+# ──────────────────────────────────────────────────────────────
+
+on:
+  # Automatic: fires when Dependabot creates a new alert
+  dependabot_alert:
+    types: [created]
+
+  # Manual: run from the Actions tab for a specific alert or all alerts
+  workflow_dispatch:
+    inputs:
+      alert-number:
+        description: "Specific Dependabot alert number to process (leave empty for all)"
+        required: false
+        type: string
+      process-all:
+        description: "Process all open Dependabot alerts"
+        required: false
+        type: boolean
+        default: false
+      dry-run:
+        description: "Dry run — log actions without creating PRs or issues"
+        required: false
+        type: boolean
+        default: false
+
+  # Scheduled: check for any missed alerts daily
+  schedule:
+    - cron: "0 9 * * 1-5" # Weekdays at 9:00 AM UTC
+
+permissions:
+  contents: write        # Create branches and commits
+  pull-requests: write   # Open pull requests
+  issues: write          # Create issues for high-severity alerts
+  security-events: read  # Read Dependabot alerts
+
+# Only run one instance per alert at a time
+concurrency:
+  group: dep-resolver-${{ github.event.alert.number || 'batch' }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve Dependabot Alert
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Node.js setup ──────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: agent/package-lock.json
+
+      # ── Install dependencies ───────────────────────────────
+      - name: Install dependencies
+        working-directory: agent
+        run: npm ci
+
+      # ── Build TypeScript ───────────────────────────────────
+      - name: Build
+        working-directory: agent
+        run: npm run build
+
+      # ── Run the resolver ───────────────────────────────────
+      - name: Run dep-resolver-agent
+        working-directory: agent
+        env:
+          # The GitHub token needs repo + security_events scopes.
+          # GITHUB_TOKEN is auto-provided but may lack dependabot
+          # permissions — use a PAT stored as a secret if needed.
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # @actions/core reads inputs from INPUT_* env vars
+          INPUT_GITHUB-TOKEN: ${{ secrets.GH_PAT }}
+          INPUT_ANTHROPIC-API-KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INPUT_REPOSITORY: ${{ github.repository }}
+          INPUT_ALERT-NUMBER: ${{ github.event.inputs.alert-number || '' }}
+          INPUT_PROCESS-ALL: ${{ github.event.inputs.process-all || 'false' }}
+          INPUT_DRY-RUN: ${{ github.event.inputs.dry-run || 'false' }}
+          INPUT_BASE-BRANCH: "main"
+          INPUT_NOTIFICATION-CHANNELS: "console,github-issue"
+          INPUT_SLACK-WEBHOOK-URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: node dist/index.js
+
+      # ── Summary ────────────────────────────────────────────
+      - name: Post summary
+        if: always()
+        run: |
+          echo "## 🤖 dep-resolver-agent Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Repository** | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Run ID** | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See the job logs above for detailed per-alert results." >> $GITHUB_STEP_SUMMARY
